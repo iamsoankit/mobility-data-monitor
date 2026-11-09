@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from sqlalchemy import Date, DateTime, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Date, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -52,4 +52,24 @@ class RecallRecord(Base):
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     last_changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class PipelineRequest(Base):
+    __tablename__ = "pipeline_requests"
+    __table_args__ = (
+        UniqueConstraint("run_id", "make", "model", "model_year", name="uq_run_vehicle_query"),
+    )
+
+    request_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("pipeline_runs.run_id"), index=True)
+    make: Mapped[str] = mapped_column(String(100))
+    model: Mapped[str] = mapped_column(String(140))
+    model_year: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(24), index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=1)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    rows_returned: Mapped[int] = mapped_column(Integer, default=0)
+    source_url: Mapped[str] = mapped_column(Text)
+    error_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 

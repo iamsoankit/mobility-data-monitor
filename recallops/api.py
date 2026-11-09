@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import desc, func, select
 
 from .database import SessionLocal, initialize_database
-from .models import PipelineRun, RecallRecord
+from .models import PipelineRequest, PipelineRun, RecallRecord
 from .pipeline import run_pipeline
 
 app = FastAPI(title="RecallOps API", version="0.1.0", description="Pipeline run status, recall records, and quality checks")
@@ -88,6 +88,42 @@ def recalls(make: str | None = None, limit: int = 100) -> list[dict]:
             query = query.where(RecallRecord.make.ilike(make))
         records = db.scalars(query).all()
         return [{"campaign_number": r.campaign_number, "make": r.make, "model": r.model, "model_year": r.model_year, "component": r.component, "report_received_date": r.report_received_date.isoformat() if r.report_received_date else None, "summary": r.summary, "consequence": r.consequence, "remedy": r.remedy, "last_seen_at": r.last_seen_at.isoformat() if r.last_seen_at else None} for r in records]
+
+
+@app.get("/api/runs/{run_id}")
+def run_detail(run_id: str) -> dict:
+    initialize_database()
+    with SessionLocal() as db:
+        run = db.get(PipelineRun, run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found.")
+        requests = db.scalars(select(PipelineRequest).where(PipelineRequest.run_id == run_id).order_by(PipelineRequest.request_id)).all()
+        return {
+            **_run_payload(run),
+            "requests": [{
+                "request_id": request.request_id,
+                "make": request.make,
+                "model": request.model,
+                "model_year": request.model_year,
+                "status": request.status,
+                "attempts": request.attempts,
+                "duration_ms": request.duration_ms,
+                "rows_returned": request.rows_returned,
+                "source_url": request.source_url,
+                "error_summary": request.error_summary,
+                "completed_at": request.completed_at.isoformat() if request.completed_at else None,
+            } for request in requests],
+        }
+
+
+@app.get("/api/catalog")
+def catalog() -> list[dict]:
+    return [
+        {"table": "pipeline_runs", "grain": "One row per pipeline execution", "key": "run_id", "purpose": "Run status, year scope, counts, and quality summary"},
+        {"table": "pipeline_requests", "grain": "One row per make/model/year request in a run", "key": "run_id + make + model + model_year", "purpose": "Request outcome, retries, response rows, duration, and error"},
+        {"table": "vehicle_recalls", "grain": "One recall campaign for one make/model/model year", "key": "campaign_number + make + model + model_year", "purpose": "Normalized recall details; safe to upsert on repeat runs"},
+        {"table": "raw JSON snapshots", "grain": "One run snapshot containing successful source responses", "key": "run_id + retrieval timestamp", "purpose": "Source traceability and reprocessing"},
+    ]
 
 
 @app.post("/api/run", status_code=202)

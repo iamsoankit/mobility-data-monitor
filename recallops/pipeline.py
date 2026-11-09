@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from .catalog import VEHICLES
 from .config import QUARANTINE_DIR, RAW_DATA_DIR
 from .database import SessionLocal, initialize_database
-from .models import PipelineRun, RecallRecord
+from .models import PipelineRequest, PipelineRun, RecallRecord
 from .source import NHTSAError, fetch_recalls
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -90,6 +90,7 @@ def run_pipeline(start_year: int, end_year: int) -> str:
     if end_year > date.today().year + 1 or start_year < 1980:
         raise ValueError("Choose model years from 1980 through next year")
 
+    pipeline_started = time.monotonic()
     initialize_database()
     run_id = str(uuid4())
     scope = f"{start_year}:{end_year}|" + ",".join(f"{m}/{d}" for m, d in VEHICLES)
@@ -104,6 +105,8 @@ def run_pipeline(start_year: int, end_year: int) -> str:
     unknown_fields: Counter = Counter()
     seen: set[tuple[str, str, str, int]] = set()
     raw_snapshots: list[dict] = []
+    request_durations_ms = 0
+    upsert_duration_ms = 0
 
     with SessionLocal() as db:
         run = PipelineRun(run_id=run_id, status="running", start_year=start_year, end_year=end_year, scope=scope)
@@ -116,13 +119,23 @@ def run_pipeline(start_year: int, end_year: int) -> str:
         for make, model in VEHICLES:
             for year in range(start_year, end_year + 1):
                 counts["queries"] += 1
+                query_started = time.monotonic()
+                attempts = 0
+                duration_ms = 0
+                rows_returned = 0
+                source_url = "https://api.nhtsa.gov/recalls/recallsByVehicle?" + urlencode({"make": make, "model": model, "modelYear": year})
                 try:
-                    payload = fetch_recalls(make, model, year)
+                    fetch_result = fetch_recalls(make, model, year)
+                    payload = fetch_result.payload
+                    attempts = fetch_result.attempts
+                    duration_ms = fetch_result.duration_ms
+                    request_durations_ms += duration_ms
                     results = payload.get("results", payload.get("Results", [])) or []
                     if not isinstance(results, list):
                         raise NHTSAError("NHTSA results field was not a list")
                     counts["successes"] += 1
                     counts["fetched"] += len(results)
+                    rows_returned = len(results)
                     raw_snapshots.append({"make": make, "model": model, "model_year": year, "payload": payload})
                     for item in results:
                         if not isinstance(item, dict):
@@ -142,6 +155,7 @@ def run_pipeline(start_year: int, end_year: int) -> str:
                             continue
                         seen.add(key)
                         counts["valid"] += 1
+                        upsert_started = time.monotonic()
                         existing = db.scalar(select(RecallRecord).where(
                             RecallRecord.campaign_number == normalized["campaign_number"],
                             RecallRecord.make == normalized["make"],
@@ -163,18 +177,33 @@ def run_pipeline(start_year: int, end_year: int) -> str:
                         # Commit in bounded batches; duplicate runs remain safe through the unique key.
                         if (counts["inserted"] + counts["updated"]) % 100 == 0:
                             db.commit()
+                        upsert_duration_ms += int((time.monotonic() - upsert_started) * 1000)
+                    db.add(PipelineRequest(run_id=run_id, make=make.title(), model=model.title(), model_year=year,
+                                           status="success", attempts=attempts, duration_ms=duration_ms,
+                                           rows_returned=rows_returned, source_url=source_url))
                     db.commit()
                     time.sleep(0.12)
                 except Exception as exc:
                     failures.append(f"{make} {model} {year}: {str(exc)[:240]}")
                     logger.exception("Source query failed for %s %s %s", make, model, year)
+                    attempts = getattr(exc, "attempts", attempts)
+                    duration_ms = getattr(exc, "duration_ms", int((time.monotonic() - query_started) * 1000))
+                    request_durations_ms += duration_ms
+                    db.add(PipelineRequest(run_id=run_id, make=make.title(), model=model.title(), model_year=year,
+                                           status="failed", attempts=attempts, duration_ms=duration_ms,
+                                           rows_returned=rows_returned, source_url=source_url,
+                                           error_summary=str(exc)[:500]))
+                    db.commit()
 
+        archive_started = time.monotonic()
         stamp = datetime.now(timezone.utc).strftime("%H%M%S")
         raw_path = raw_dir / f"{run_id}-{stamp}.json"
         raw_path.write_text(json.dumps({"run_id": run_id, "retrieved_at": datetime.now(timezone.utc).isoformat(), "source": "NHTSA recalls API", "responses": raw_snapshots}, ensure_ascii=False, indent=2), encoding="utf-8")
         if quarantined:
             (quarantine_dir / "invalid_records.json").write_text(json.dumps(quarantined, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        archive_duration_ms = int((time.monotonic() - archive_started) * 1000)
 
+        finalize_started = time.monotonic()
         source_complete = counts["successes"] == total_queries
         volume_change_pct = None
         if comparable_previous is not None and comparable_previous > 0:
@@ -189,6 +218,11 @@ def run_pipeline(start_year: int, end_year: int) -> str:
             "volume_change_pct_vs_previous_same_scope": volume_change_pct,
             "raw_snapshot": str(raw_path.relative_to(RAW_DATA_DIR.parent)),
             "quarantine_file": str((quarantine_dir / "invalid_records.json").relative_to(QUARANTINE_DIR.parent)) if quarantined else None,
+            "stage_durations_ms": {
+                "source_requests": request_durations_ms,
+                "database_upserts": upsert_duration_ms,
+                "raw_archive": archive_duration_ms,
+            },
             "checks": [
                 {"name": "Source coverage", "status": "passed" if source_complete else "warning", "detail": f"{counts['successes']} of {total_queries} requests succeeded"},
                 {"name": "Required fields and year range", "status": "passed" if not quarantined else "warning", "detail": f"{len(quarantined)} records quarantined"},
@@ -203,6 +237,8 @@ def run_pipeline(start_year: int, end_year: int) -> str:
             status = "warning"
         else:
             status = "ok"
+        quality["stage_durations_ms"]["quality_summary"] = int((time.monotonic() - finalize_started) * 1000)
+        quality["stage_durations_ms"]["total_pipeline"] = int((time.monotonic() - pipeline_started) * 1000)
         run.finished_at = datetime.now(timezone.utc)
         run.status = status
         run.source_queries = counts["successes"]

@@ -14,6 +14,7 @@ This portfolio project is designed to show data ingestion, SQL transformation, r
 - Quarantines malformed records instead of silently dropping them.
 - Reports source coverage, duplicate rows, schema changes, quarantined rows, and large volume changes.
 - Offers a small operations dashboard with run history and per-check status.
+- Shows each pipeline stage, individual source request retries and timings, plus a small data catalog.
 - Can run on demand or daily through GitHub Actions after a `DATABASE_URL` secret is configured.
 
 ## Architecture
@@ -75,6 +76,8 @@ The first run queries five make/model pairs over four years (20 API requests). A
 
 - `GET /health` — service health.
 - `GET /api/dashboard` — latest run, recent history, quality checks, and coverage counts.
+- `GET /api/runs/{run_id}` — run summary plus one log row per make/model/year source request.
+- `GET /api/catalog` — table grain, key, and purpose for each stored dataset.
 - `GET /api/recalls?make=Toyota&limit=100` — normalized recall records.
 - `POST /api/run` — start a background ingestion run. Optional query parameters: `start_year`, `end_year`.
 
