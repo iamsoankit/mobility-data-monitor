@@ -1,6 +1,6 @@
-# RecallOps
+# Mobility Monitor
 
-**A small, observable data pipeline for public vehicle recall data.** RecallOps requests recall records from the NHTSA API, preserves the source responses, validates and normalizes records, and loads them into PostgreSQL or SQLite. A web dashboard explains what happened during each run.
+**A small, observable data pipeline for public vehicle recall data.** Mobility Monitor requests recall records from the NHTSA API, preserves the source responses, validates and normalizes records, and loads them into PostgreSQL or SQLite. Its operations dashboard explains what happened during each run.
 
 The project is intended as a data engineering portfolio project. It focuses on the full path from source request to a traceable database row, including retries, data quality checks, repeat-safe loads, and run history.
 
@@ -144,4 +144,4 @@ The dashboard is a Vite/React frontend and the API is a separate FastAPI service
 
 ## Scope
 
-RecallOps requests public NHTSA recall data by make, model, and model year. It does not ingest VINs, consumer complaint narratives, names, or contact details. See the [NHTSA dataset and API documentation](https://www.nhtsa.gov/nhtsa-datasets-and-apis) before expanding the source catalog or request volume.
+Mobility Monitor requests public NHTSA recall data by make, model, and model year. It does not ingest VINs, consumer complaint narratives, names, or contact details. See the [NHTSA dataset and API documentation](https://www.nhtsa.gov/nhtsa-datasets-and-apis) before expanding the source catalog or request volume.
