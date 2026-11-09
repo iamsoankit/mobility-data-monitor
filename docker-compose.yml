@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: recallops
+      POSTGRES_USER: recallops
+      POSTGRES_PASSWORD: recallops-local
+    ports:
+      - "5432:5432"
+    volumes:
+      - recallops-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recallops -d recallops"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://recallops:recallops-local@postgres:5432/recallops
+      RAW_DATA_DIR: /app/data/raw
+      QUARANTINE_DIR: /app/data/quarantine
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  recallops-db:

@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+data/*.db
+data/raw/*
+data/quarantine/*
+!data/raw/.gitkeep
+!data/quarantine/.gitkeep
+web/node_modules/
+web/dist/
+web/.env.local
+.DS_Store
